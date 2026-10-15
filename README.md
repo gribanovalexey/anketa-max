@@ -3,7 +3,7 @@
 Схема работы:
 
 ```
-Чат с ботом MAX ──кнопка «Открыть»──▶ Мини-приложение (miniapp/, хостинг по HTTPS)
+Чат с ботом MAX ──кнопка «Открыть»──▶ Мини-приложение (docs/, GitHub Pages)
                                           │  POST: ответы + initData (подпись MAX)
                                           ▼
                               Google Apps Script (google-apps-script/Code.gs)
@@ -17,8 +17,8 @@
 
 | Файл | Что это |
 |---|---|
-| `miniapp/config.js` | **Вопросы анкеты и адрес скрипта** — редактируется под вашу анкету |
-| `miniapp/index.html`, `app.js`, `style.css` | Мини-приложение |
+| `docs/config.js` | **Вопросы анкеты и адрес скрипта** — редактируется под вашу анкету |
+| `docs/index.html`, `app.js`, `style.css` | Мини-приложение |
 | `google-apps-script/Code.gs` | Приём ответов и запись в таблицу |
 
 ## Шаг 1. Бот в MAX
@@ -47,7 +47,7 @@
 
 ## Шаг 3. Настроить анкету
 
-Открыть `miniapp/config.js`:
+Открыть `docs/config.js`:
 
 - в `endpoint` вставить URL из шага 2.6;
 - заменить вопросы в `questions` на свои. Типы: `single`, `multi`, `text`, `textarea`,
@@ -60,11 +60,17 @@
 
 ## Шаг 4. Разместить мини-приложение (нужен HTTPS)
 
-Подойдёт любой статический хостинг: GitHub Pages, Яндекс Object Storage, VK Cloud, Netlify и т. п.
-Загрузить **содержимое** папки `miniapp/` (4 файла).
+Проект лежит на GitHub: <https://github.com/gribanovalexey/anketa-max>, мини-приложение — в папке `docs/`.
 
-Пример для GitHub Pages: создать публичный репозиторий, загрузить файлы в корень,
-**Settings → Pages → Branch: main → Save**. Адрес будет вида `https://<логин>.github.io/<репозиторий>/`.
+Включить GitHub Pages: **Settings → Pages → Build and deployment → Source: Deploy from a branch →
+Branch: `main`, папка `/docs` → Save**. Через 1–2 минуты анкета будет доступна по адресу
+<https://gribanovalexey.github.io/anketa-max/> — эту ссылку и нужно указать в настройках бота MAX.
+
+После изменения `docs/config.js` изменения нужно отправить на GitHub (`git commit` + `git push`
+или правка файла прямо на github.com) — сайт обновится сам.
+
+Вместо GitHub Pages можно использовать любой статический хостинг с HTTPS (Яндекс Object Storage,
+VK Cloud, Netlify и т. п.) — загрузить туда **содержимое** папки `docs/` (4 файла).
 
 Проверить в обычном браузере: `https://…/?debug=1` — анкета откроется (отправка без MAX
 работать не будет — это защита). Без `?debug=1` появится сообщение «Откройте анкету в MAX».
