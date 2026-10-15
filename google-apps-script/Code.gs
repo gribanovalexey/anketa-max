@@ -1,14 +1,25 @@
 /**
- * Приём ответов анкеты из мини-приложения MAX и запись в Google Таблицу.
+ * Анкета MAX: бот запрашивает контакт, мини-приложение присылает ответы,
+ * всё записывается в Google Таблицу.
  *
  * Свойства скрипта (Настройки проекта → Свойства скрипта):
- *   BOT_TOKEN    — токен бота MAX (обязательно, нужен для проверки подписи initData)
- *   SHEET_NAME   — имя листа (необязательно, по умолчанию «Ответы»)
- *   ALLOW_DEBUG  — "true", чтобы принимать ответы без подписи (только для теста в браузере!)
+ *   BOT_TOKEN        — токен бота MAX (обязательно)
+ *   SHEET_NAME       — имя листа с ответами (по умолчанию «Ответы»)
+ *   REQUIRE_CONTACT  — "false", чтобы анкету можно было заполнить без номера телефона
+ *   ALLOW_DEBUG      — "true", чтобы принимать ответы без подписи (только для теста в браузере!)
+ *
+ * Запуск бота: один раз выполнить функцию setupBot (см. README).
+ * Бот сам забирает новые события из MAX раз в минуту (функция pollUpdates по триггеру).
  */
 
-var FIXED_HEADERS = ['Дата и время', 'ID пользователя MAX', 'Имя', 'Фамилия', 'Username'];
+var FIXED_HEADERS = ['Дата и время', 'ID пользователя MAX', 'Имя', 'Фамилия', 'Username', 'Телефон'];
+var CONTACT_HEADERS = ['Дата и время', 'ID пользователя MAX', 'Имя', 'Телефон', 'Подтверждён MAX'];
+var CONTACTS_SHEET = 'Контакты';
 var MAX_AGE_SECONDS = 24 * 60 * 60; // насколько «свежей» должна быть подпись initData
+
+// platform-api2.max.ru подписан сертификатом Минцифры, которому серверы Google не доверяют,
+// поэтому используем основной адрес API.
+var MAX_API = 'https://platform-api.max.ru';
 
 function doPost(e) {
   try {
@@ -17,7 +28,12 @@ function doPost(e) {
     if (!auth.ok) return json_({ ok: false, error: 'auth', message: auth.message });
 
     if (req.action === 'check') {
-      return json_({ ok: true, done: auth.user.id ? hasAnswered_(auth.user.id) : false });
+      var id = auth.user.id;
+      return json_({
+        ok: true,
+        done: id ? hasAnswered_(id) : false,
+        needContact: id ? contactRequired_() && !getContact_(id) : false
+      });
     }
     if (req.action === 'submit') {
       return json_(saveAnswers_(auth.user, req.answers || [], !!req.allowResubmit));
@@ -33,7 +49,7 @@ function doGet() {
   return json_({ ok: true, message: 'Сервис анкеты работает' });
 }
 
-// ---------------- запись в таблицу ----------------
+// ---------------- запись ответов ----------------
 
 function saveAnswers_(user, answers, allowResubmit) {
   var lock = LockService.getScriptLock();
@@ -41,19 +57,24 @@ function saveAnswers_(user, answers, allowResubmit) {
   try {
     if (!allowResubmit && user.id && hasAnswered_(user.id)) return { ok: false, error: 'already' };
 
+    var contact = user.id ? getContact_(user.id) : null;
+    if (user.id && !contact && contactRequired_()) return { ok: false, error: 'need_contact' };
+
     var sheet = getSheet_();
-    var headers = ensureHeaders_(sheet, answers.map(function (a) { return a.title; }));
+    var headers = ensureHeaders_(sheet, FIXED_HEADERS.concat(answers.map(function (a) { return a.title; })));
 
     var row = new Array(headers.length).fill('');
-    row[0] = new Date();
-    row[1] = user.id ? String(user.id) : '';
-    row[2] = user.first_name || '';
-    row[3] = user.last_name || '';
-    row[4] = user.username ? '@' + user.username : '';
-    answers.forEach(function (a) {
-      var col = headers.indexOf(String(a.title));
-      if (col !== -1) row[col] = safeCell_(a.value);
-    });
+    function put(title, value) {
+      var col = headers.indexOf(String(title));
+      if (col !== -1) row[col] = value;
+    }
+    put('Дата и время', new Date());
+    put('ID пользователя MAX', user.id ? String(user.id) : '');
+    put('Имя', user.first_name || '');
+    put('Фамилия', user.last_name || '');
+    put('Username', user.username ? '@' + user.username : '');
+    put('Телефон', contact ? contact.phone : '');
+    answers.forEach(function (a) { put(a.title, safeCell_(a.value)); });
 
     sheet.appendRow(row);
     return { ok: true };
@@ -63,18 +84,21 @@ function saveAnswers_(user, answers, allowResubmit) {
 }
 
 function getSheet_() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
   var name = PropertiesService.getScriptProperties().getProperty('SHEET_NAME') || 'Ответы';
+  return getOrCreateSheet_(name);
+}
+
+function getOrCreateSheet_(name) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
   return ss.getSheetByName(name) || ss.insertSheet(name);
 }
 
-/** Создаёт шапку и добавляет колонки для новых вопросов. Возвращает массив заголовков. */
-function ensureHeaders_(sheet, questionTitles) {
+/** Создаёт шапку и добавляет недостающие колонки в конец. Возвращает массив заголовков. */
+function ensureHeaders_(sheet, titles) {
   var lastCol = sheet.getLastColumn();
   var headers = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(String) : [];
-  if (!headers.length) headers = FIXED_HEADERS.slice();
 
-  questionTitles.forEach(function (t) {
+  titles.forEach(function (t) {
     if (headers.indexOf(String(t)) === -1) headers.push(String(t));
   });
 
@@ -85,13 +109,17 @@ function ensureHeaders_(sheet, questionTitles) {
   return headers;
 }
 
-function hasAnswered_(userId) {
-  var sheet = getSheet_();
+/** Номер строки (≥2), где во 2-й колонке стоит userId, или 0. */
+function findUserRow_(sheet, userId) {
   var last = sheet.getLastRow();
-  if (last < 2) return false;
+  if (last < 2) return 0;
   var found = sheet.getRange(2, 2, last - 1, 1)
     .createTextFinder(String(userId)).matchEntireCell(true).findNext();
-  return !!found;
+  return found ? found.getRow() : 0;
+}
+
+function hasAnswered_(userId) {
+  return findUserRow_(getSheet_(), userId) > 0;
 }
 
 /** Защита от формул в ячейках (=, +, -, @ в начале строки). */
@@ -100,7 +128,190 @@ function safeCell_(v) {
   return /^[=+\-@]/.test(s) ? "'" + s : s;
 }
 
-// ---------------- проверка подписи MAX ----------------
+// ---------------- контакты ----------------
+
+function contactRequired_() {
+  return PropertiesService.getScriptProperties().getProperty('REQUIRE_CONTACT') !== 'false';
+}
+
+function getContact_(userId) {
+  var sheet = getOrCreateSheet_(CONTACTS_SHEET);
+  var row = findUserRow_(sheet, userId);
+  if (!row) return null;
+  var v = sheet.getRange(row, 1, 1, CONTACT_HEADERS.length).getValues()[0];
+  return v[3] ? { phone: String(v[3]), verified: v[4] === 'да' } : null;
+}
+
+function saveContact_(user, phone, verified) {
+  var sheet = getOrCreateSheet_(CONTACTS_SHEET);
+  ensureHeaders_(sheet, CONTACT_HEADERS);
+  var name = [user.first_name, user.last_name].filter(Boolean).join(' ') || user.name || '';
+  var values = [[new Date(), String(user.user_id), safeCell_(name), "'" + phone, verified ? 'да' : 'нет']];
+  var row = findUserRow_(sheet, user.user_id);
+  if (row) sheet.getRange(row, 1, 1, values[0].length).setValues(values);
+  else sheet.appendRow(values[0]);
+}
+
+// ---------------- бот: события из MAX ----------------
+
+/** Один раз запустить из редактора: проверяет токен и включает опрос событий раз в минуту. */
+function setupBot() {
+  var me = maxApi_('get', '/me');
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('BOT_USERNAME', me.username || '');
+  props.deleteProperty('APP_BUTTON');
+  console.log('Бот: ' + (me.name || me.first_name) + ' (@' + me.username + ')');
+
+  var subs = maxApi_('get', '/subscriptions').subscriptions || [];
+  if (subs.length) {
+    console.warn('У бота есть webhook-подписки, при них опрос событий не работает: ' +
+      subs.map(function (s) { return s.url; }).join(', ') + '. Удалите их или запустите deleteWebhooks.');
+  }
+
+  stopBot();
+  ScriptApp.newTrigger('pollUpdates').timeBased().everyMinutes(1).create();
+  pollUpdates();
+  console.log('Готово: бот проверяет новые сообщения раз в минуту.');
+}
+
+/** Отключить бота (удалить триггер опроса). */
+function stopBot() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'pollUpdates') ScriptApp.deleteTrigger(t);
+  });
+}
+
+/** Удалить webhook-подписки бота, если они мешают опросу. */
+function deleteWebhooks() {
+  (maxApi_('get', '/subscriptions').subscriptions || []).forEach(function (s) {
+    maxApi_('delete', '/subscriptions', { url: s.url });
+    console.log('Удалена подписка: ' + s.url);
+  });
+}
+
+/** Забирает новые события из MAX (вызывается триггером раз в минуту). */
+function pollUpdates() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var query = { limit: 100, timeout: 0, types: 'bot_started,message_created' };
+    var marker = props.getProperty('MAX_MARKER');
+    if (marker) query.marker = marker;
+
+    var res = maxApi_('get', '/updates', query);
+    (res.updates || []).forEach(function (u) {
+      try { handleUpdate_(u); } catch (err) { console.error('Ошибка обработки события', err, JSON.stringify(u)); }
+    });
+    if (res.marker != null) props.setProperty('MAX_MARKER', String(res.marker));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleUpdate_(u) {
+  if (u.update_type === 'bot_started') {
+    var user = u.user || {};
+    if (getContact_(user.user_id)) sendAppInvite_(user.user_id, 'Здравствуйте! Номер у нас уже есть — можно заполнять анкету.');
+    else askContact_(user.user_id, 'Здравствуйте! Чтобы пройти анкету, поделитесь, пожалуйста, номером телефона — нажмите кнопку ниже.');
+    return;
+  }
+
+  if (u.update_type === 'message_created') {
+    var m = u.message || {};
+    var sender = m.sender;
+    if (!sender || sender.is_bot) return;
+    if (m.recipient && m.recipient.chat_type && m.recipient.chat_type !== 'dialog') return;
+
+    var contact = ((m.body && m.body.attachments) || []).filter(function (a) { return a.type === 'contact'; })[0];
+    if (contact) return processContact_(sender, contact.payload || {});
+
+    if (getContact_(sender.user_id)) sendAppInvite_(sender.user_id, 'Анкета открывается кнопкой ниже.');
+    else askContact_(sender.user_id, 'Чтобы пройти анкету, сначала поделитесь номером телефона — кнопка ниже.');
+  }
+}
+
+function processContact_(sender, payload) {
+  var info = payload.max_info || {};
+  if (info.user_id && String(info.user_id) !== String(sender.user_id)) {
+    return askContact_(sender.user_id, 'Нужен ваш собственный номер. Нажмите, пожалуйста, кнопку «Поделиться контактом».');
+  }
+  var phone = phoneFromVcf_(payload.vcf_info);
+  if (!phone) return askContact_(sender.user_id, 'Не удалось прочитать номер. Нажмите, пожалуйста, кнопку ещё раз.');
+
+  saveContact_(sender, phone, verifyContact_(payload));
+  sendAppInvite_(sender.user_id, 'Спасибо, номер сохранён! Теперь заполните анкету.');
+}
+
+function phoneFromVcf_(vcf) {
+  var text = String(vcf || '').replace(/\\r\\n|\\n/g, '\n');
+  var m = text.match(/^TEL[^:\n]*:(.+)$/im);
+  if (!m) return '';
+  var digits = m[1].replace(/[^\d+]/g, '');
+  return digits && digits.charAt(0) !== '+' ? '+' + digits : digits;
+}
+
+/**
+ * Проверка, что номер привязан к аккаунту MAX (а не введён вручную):
+ * hash = HMAC-SHA256(key = токен бота, msg = vcf_info). Документация не уточняет,
+ * как именно передаются переводы строк, поэтому пробуем несколько вариантов.
+ */
+function verifyContact_(payload) {
+  if (!payload.hash || !payload.vcf_info) return false;
+  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  var raw = String(payload.vcf_info);
+  var variants = [raw, raw.replace(/\\r\\n/g, '\r\n'), raw.replace(/\r\n/g, '\n'), raw.replace(/\\r\\n/g, '\n')];
+  var expected = String(payload.hash).toLowerCase();
+  return variants.some(function (v) {
+    var sign = Utilities.computeHmacSha256Signature(Utilities.newBlob(v).getBytes(), Utilities.newBlob(token).getBytes());
+    return toHex_(sign) === expected || Utilities.base64Encode(sign).toLowerCase() === expected;
+  });
+}
+
+function askContact_(userId, text) {
+  sendMessage_(userId, text, [[{ type: 'request_contact', text: '📱 Поделиться контактом' }]]);
+}
+
+/** Сообщение с кнопкой открытия анкеты. Если кнопка не поддерживается — просто текст. */
+function sendAppInvite_(userId, text) {
+  var props = PropertiesService.getScriptProperties();
+  var username = props.getProperty('BOT_USERNAME');
+  if (username && props.getProperty('APP_BUTTON') !== 'fail') {
+    try {
+      sendMessage_(userId, text, [[{ type: 'open_app', text: '📝 Заполнить анкету', web_app: username }]]);
+      return;
+    } catch (err) {
+      console.warn('Кнопка open_app не принята, дальше шлём без неё', err);
+      props.setProperty('APP_BUTTON', 'fail');
+    }
+  }
+  sendMessage_(userId, text + '\n\nНажмите кнопку «Открыть» внизу чата.');
+}
+
+function sendMessage_(userId, text, buttons) {
+  var body = { text: text };
+  if (buttons) body.attachments = [{ type: 'inline_keyboard', payload: { buttons: buttons } }];
+  return maxApi_('post', '/messages', { user_id: userId }, body);
+}
+
+function maxApi_(method, path, query, body) {
+  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  if (!token) throw new Error('Не задано свойство BOT_TOKEN');
+
+  var qs = Object.keys(query || {}).map(function (k) {
+    return encodeURIComponent(k) + '=' + encodeURIComponent(query[k]);
+  }).join('&');
+  var options = { method: method, headers: { Authorization: token }, muteHttpExceptions: true };
+  if (body) { options.contentType = 'application/json'; options.payload = JSON.stringify(body); }
+
+  var resp = UrlFetchApp.fetch(MAX_API + path + (qs ? '?' + qs : ''), options);
+  var code = resp.getResponseCode();
+  var text = resp.getContentText();
+  if (code >= 300) throw new Error('MAX API ' + method.toUpperCase() + ' ' + path + ' → ' + code + ': ' + text);
+  return text ? JSON.parse(text) : {};
+}
+
+// ---------------- проверка подписи мини-приложения ----------------
 // Алгоритм: https://dev.max.ru/docs/webapps/validation
 //   secret = HMAC_SHA256(key="WebAppData", msg=BOT_TOKEN)
 //   hash   = hex(HMAC_SHA256(key=secret, msg="k1=v1\nk2=v2…" — пары без hash, сортировка по ключу))

@@ -237,9 +237,14 @@
       .then(function (res) {
         if (res.ok) { haptic('success'); showMessage('✅', S.thanks, '', true); }
         else if (res.error === 'already') showMessage('👌', S.alreadyDone, '', true);
+        else if (res.error === 'need_contact') showNeedContact();
         else showError(res.message || res.error);
       })
       .catch(function () { showError('Нет связи с сервером'); });
+  }
+
+  function showNeedContact() {
+    showMessage('📱', 'Сначала поделитесь номером', S.needContact, true);
   }
 
   function showError(msg) {
@@ -261,9 +266,11 @@
     showMessage('📱', 'Откройте анкету в MAX', 'Анкета работает только внутри мессенджера MAX — через кнопку в чате с ботом.');
     return;
   }
-  if (S.allowResubmit) { showIntro(); return; }
-
   api('check')
-    .then(function (res) { if (res.ok && res.done) showMessage('👌', S.alreadyDone, '', true); else showIntro(); })
+    .then(function (res) {
+      if (res.ok && res.done && !S.allowResubmit) showMessage('👌', S.alreadyDone, '', true);
+      else if (res.ok && res.needContact) showNeedContact();
+      else showIntro();
+    })
     .catch(showIntro);
 })();
