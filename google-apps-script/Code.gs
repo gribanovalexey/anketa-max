@@ -8,8 +8,9 @@
  *   REQUIRE_CONTACT  — "false", чтобы анкету можно было заполнить без номера телефона
  *   ALLOW_DEBUG      — "true", чтобы принимать ответы без подписи (только для теста в браузере!)
  *
- * Запуск бота: один раз выполнить функцию setupBot (см. README).
- * Бот сам забирает новые события из MAX раз в минуту (функция pollUpdates по триггеру).
+ * Запуск бота (см. README) — один из двух режимов:
+ *   setupWebhook — MAX сам присылает события в doPost, бот отвечает сразу;
+ *   setupBot     — запасной режим: бот забирает события раз в минуту (pollUpdates по триггеру).
  */
 
 var FIXED_HEADERS = ['Дата и время', 'ID пользователя MAX', 'Имя', 'Фамилия', 'Username', 'Телефон'];
@@ -24,6 +25,8 @@ var MAX_API = 'https://platform-api.max.ru';
 function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
+    if (req.update_type) return handleWebhook_(e, req);
+
     var auth = authenticate_(req.initData);
     if (!auth.ok) return json_({ ok: false, error: 'auth', message: auth.message });
 
@@ -154,39 +157,111 @@ function saveContact_(user, phone, verified) {
 
 // ---------------- бот: события из MAX ----------------
 
-/** Один раз запустить из редактора: проверяет токен и включает опрос событий раз в минуту. */
-function setupBot() {
-  var me = maxApi_('get', '/me');
-  var props = PropertiesService.getScriptProperties();
-  props.setProperty('BOT_USERNAME', me.username || '');
-  props.deleteProperty('APP_BUTTON');
-  console.log('Бот: ' + (me.name || me.first_name) + ' (@' + me.username + ')');
+var UPDATE_TYPES = ['bot_started', 'message_created'];
 
-  var subs = maxApi_('get', '/subscriptions').subscriptions || [];
-  if (subs.length) {
-    console.warn('У бота есть webhook-подписки, при них опрос событий не работает: ' +
-      subs.map(function (s) { return s.url; }).join(', ') + '. Удалите их или запустите deleteWebhooks.');
+/**
+ * Режим webhook: MAX сам присылает события в doPost этого веб-приложения.
+ * Запускать из редактора ПОСЛЕ развертывания новой версии.
+ */
+function setupWebhook() {
+  var props = PropertiesService.getScriptProperties();
+  loadBotInfo_();
+
+  var url = props.getProperty('WEBAPP_URL') || ScriptApp.getService().getUrl();
+  if (!url || !/\/exec$/.test(url)) {
+    throw new Error('Не удалось определить адрес веб-приложения (' + url + '). ' +
+      'Добавьте свойство скрипта WEBAPP_URL = https://script.google.com/macros/s/…/exec');
   }
 
+  // Apps Script не видит заголовки запроса, поэтому секрет передаём параметром в адресе
+  var secret = Utilities.getUuid().replace(/-/g, '');
+  props.setProperty('WEBHOOK_SECRET', secret);
+  props.setProperty('WEBHOOK_DUPLICATES', '0');
+
+  stopBot();
+  deleteWebhooks();
+  var res = maxApi_('post', '/subscriptions', null,
+    { url: url + '?secret=' + secret, update_types: UPDATE_TYPES, secret: secret });
+  console.log('Ответ MAX: ' + JSON.stringify(res));
+  console.log('Готово: MAX присылает события на ' + url + '. Проверить состояние — функция webhookStatus.');
+}
+
+/**
+ * Режим опроса (запасной): бот забирает события раз в минуту.
+ * Webhook при этом отключается — MAX не отдаёт события опросом, пока он активен.
+ */
+function setupBot() {
+  loadBotInfo_();
+  deleteWebhooks();
   stopBot();
   ScriptApp.newTrigger('pollUpdates').timeBased().everyMinutes(1).create();
   pollUpdates();
   console.log('Готово: бот проверяет новые сообщения раз в минуту.');
 }
 
-/** Отключить бота (удалить триггер опроса). */
+/** Показывает в журнале активные подписки и сколько раз MAX присылал одно событие повторно. */
+function webhookStatus() {
+  var subs = maxApi_('get', '/subscriptions').subscriptions || [];
+  console.log(subs.length
+    ? 'Подписки: ' + subs.map(function (s) { return s.url.replace(/secret=\w+/, 'secret=…'); }).join(', ')
+    : 'Подписок нет — webhook отключён (MAX мог отключить его сам после ошибок доставки).');
+  console.log('Повторных доставок (MAX не принял ответ с первого раза): ' +
+    (PropertiesService.getScriptProperties().getProperty('WEBHOOK_DUPLICATES') || 0));
+  var polling = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'pollUpdates'; });
+  console.log('Режим опроса раз в минуту: ' + (polling ? 'включён' : 'выключен'));
+}
+
+/** Отключить опрос событий (удалить триггер pollUpdates). */
 function stopBot() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'pollUpdates') ScriptApp.deleteTrigger(t);
   });
 }
 
-/** Удалить webhook-подписки бота, если они мешают опросу. */
+/** Удалить все webhook-подписки бота. */
 function deleteWebhooks() {
   (maxApi_('get', '/subscriptions').subscriptions || []).forEach(function (s) {
     maxApi_('delete', '/subscriptions', { url: s.url });
-    console.log('Удалена подписка: ' + s.url);
+    console.log('Удалена подписка: ' + s.url.replace(/secret=\w+/, 'secret=…'));
   });
+}
+
+function loadBotInfo_() {
+  var me = maxApi_('get', '/me');
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('BOT_USERNAME', me.username || '');
+  props.deleteProperty('APP_BUTTON');
+  console.log('Бот: ' + (me.name || me.first_name) + ' (@' + me.username + ')');
+}
+
+/** Событие от MAX по webhook. Повторные доставки того же события пропускаются. */
+function handleWebhook_(e, u) {
+  var props = PropertiesService.getScriptProperties();
+  var secret = props.getProperty('WEBHOOK_SECRET');
+  if (!secret || (e.parameter || {}).secret !== secret) return json_({ ok: false });
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = updateKey_(u);
+    if (cache.get(key)) {
+      props.setProperty('WEBHOOK_DUPLICATES', String(Number(props.getProperty('WEBHOOK_DUPLICATES') || 0) + 1));
+      return json_({ ok: true, duplicate: true });
+    }
+    cache.put(key, '1', 21600); // 6 часов
+  } finally {
+    lock.releaseLock();
+  }
+
+  try { handleUpdate_(u); } catch (err) { console.error('Ошибка обработки события', err, JSON.stringify(u)); }
+  return json_({ ok: true });
+}
+
+function updateKey_(u) {
+  var m = u.message || {};
+  var raw = [u.update_type, u.timestamp, (m.body && m.body.mid) || '', (u.user && u.user.user_id) || ''].join('|');
+  return 'upd_' + toHex_(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, raw));
 }
 
 /** Забирает новые события из MAX (вызывается триггером раз в минуту). */
@@ -195,7 +270,7 @@ function pollUpdates() {
   if (!lock.tryLock(5000)) return;
   try {
     var props = PropertiesService.getScriptProperties();
-    var query = { limit: 100, timeout: 0, types: 'bot_started,message_created' };
+    var query = { limit: 100, timeout: 0, types: UPDATE_TYPES.join(',') };
     var marker = props.getProperty('MAX_MARKER');
     if (marker) query.marker = marker;
 
