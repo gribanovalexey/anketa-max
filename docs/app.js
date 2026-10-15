@@ -55,25 +55,32 @@
   }
 
   // ---------- экраны ----------
-  function showMessage(icon, title, text, withClose) {
+  function showMessage(icon, title, text, withClose, again) {
     setBack(false);
+    var buttons = [];
+    if (again) buttons.push(el('button', { class: 'btn' + (withClose ? ' secondary' : ''), text: 'Пройти ещё раз', onclick: restart }));
+    if (withClose && WA && WA.close) buttons.push(el('button', { class: 'btn', text: 'Закрыть', onclick: function () { WA.close(); } }));
     render(el('div', { class: 'screen center' }, [
       el('div', { class: 'big-icon', text: icon }),
       el('h2', { text: title }),
       el('p', { class: 'muted', text: text || '' }),
-      withClose && WA && WA.close ? el('div', { class: 'footer', style: 'width:100%' }, [
-        el('button', { class: 'btn', text: 'Закрыть', onclick: function () { WA.close(); } })
-      ]) : null
+      buttons.length ? el('div', { class: 'footer', style: 'width:100%' }, buttons) : null
     ]));
   }
 
-  function showIntro() {
+  function restart() {
+    answers = {}; others = {}; current = 0;
+    showIntro(true);
+  }
+
+  function showIntro(doneBefore) {
     setBack(false);
     var hello = user.first_name ? 'Здравствуйте, ' + user.first_name + '!' : 'Здравствуйте!';
     render(el('div', { class: 'screen' }, [
       el('div', { class: 'body' }, [
         el('h1', { text: S.title }),
         el('p', { class: 'muted', text: hello + ' ' + S.intro }),
+        doneBefore ? el('p', { class: 'muted', text: S.againNote }) : null,
         el('p', { class: 'muted', text: 'Вопросов: ' + S.questions.length })
       ]),
       el('div', { class: 'footer' }, [
@@ -235,7 +242,7 @@
     var payload = S.questions.map(function (q) { return { id: q.id, title: q.title, value: finalValue(q) }; });
     api('submit', { answers: payload, allowResubmit: !!S.allowResubmit })
       .then(function (res) {
-        if (res.ok) { haptic('success'); showMessage('✅', S.thanks, '', true); }
+        if (res.ok) { haptic('success'); showMessage('✅', S.thanks, '', true, S.allowResubmit); }
         else if (res.error === 'already') showMessage('👌', S.alreadyDone, '', true);
         else if (res.error === 'need_contact') showNeedContact();
         else showError(res.message || res.error);
@@ -270,7 +277,7 @@
     .then(function (res) {
       if (res.ok && res.done && !S.allowResubmit) showMessage('👌', S.alreadyDone, '', true);
       else if (res.ok && res.needContact) showNeedContact();
-      else showIntro();
+      else showIntro(res.ok && res.done);
     })
-    .catch(showIntro);
+    .catch(function () { showIntro(); });
 })();
