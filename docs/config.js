@@ -3,7 +3,7 @@
 // ============================================================
 window.SURVEY = {
   // URL веб-приложения Google Apps Script (см. README, шаг 2)
-  endpoint: 'https://script.google.com/macros/s/ВСТАВЬТЕ_ID/exec',
+  endpoint: 'https://script.google.com/macros/s/AKfycbwfdiGq5X-BQ3txlps-fiE6JnCJKRtgk_zqUnHosdo11lvw0Skw22_jk9Hzd2vasvSu8Q/exec',
 
   title: 'Анкета участника',
   intro: 'Ответьте, пожалуйста, на несколько вопросов. Это займёт 2–3 минуты.',
