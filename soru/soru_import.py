@@ -104,10 +104,12 @@ def read_7z(path):
 
 
 def load_template(path):
-    for name, raw in read_7z(path).items():
+    """Все файлы выгрузки (по порядку) + имя и текст файла формы «Анкета родителей»."""
+    entries = read_7z(path)
+    for name, raw in entries.items():
         text = raw.decode('cp1251')
         if 'formid="soru_08"' in text[:400]:
-            return name, text
+            return entries, name, text
     sys.exit('В шаблоне нет формы «Анкета родителей» (formid="soru_08"). Выгрузите её из АРМ СОРУ.')
 
 
@@ -199,10 +201,11 @@ def convert(row, cols):
 
 
 # ---------------------------------------------------------------- сборка файла
-def build(template_text, period, data, pid):
-    root_tag = re.search(r'<root[^>]*>', template_text).group(0)
-    new_root = re.sub(r'pid="[^"]*"', f'pid="{pid}"', root_tag)
-    text = template_text.replace(root_tag, new_root, 1)
+def build(template_text, period, data, pid=None):
+    text = template_text
+    if pid:  # по умолчанию заголовок остаётся как в выгрузке программы
+        root_tag = re.search(r'<root[^>]*>', text).group(0)
+        text = text.replace(root_tag, re.sub(r'pid="[^"]*"', f'pid="{pid}"', root_tag), 1)
     items = ''.join(f'\t\t\t<item i="{ind}" o="{obj}" p="{period}" dk="1" v="{v}"/>\n'
                     for obj, vals in data.items() for ind, v in vals.items())
     text, n = re.subn(r'\t<data>\s*</data>', '\t<data>\n' + items + '\t</data>', text, count=1)
@@ -210,13 +213,14 @@ def build(template_text, period, data, pid):
     return text
 
 
-def write_7z(entry_name, text, out):
+def write_7z(entries, out):
+    """entries — {имя в архиве: байты}; имена как в выгрузке программы («../Stream0.xml», …)."""
     with tempfile.TemporaryDirectory() as tmp:
         work = os.path.join(tmp, 'w'); os.makedirs(work)
-        target = os.path.normpath(os.path.join(work, entry_name))
-        with open(target, 'wb') as f: f.write(text.encode('cp1251', errors='replace'))
+        for name, raw in entries.items():
+            with open(os.path.normpath(os.path.join(work, name)), 'wb') as f: f.write(raw)
         tmp_out = os.path.join(tmp, 'out.7z')
-        subprocess.run([TAR, '--format=7zip', '-P', '-cf', tmp_out, entry_name], cwd=work, check=True)
+        subprocess.run([TAR, '--format=7zip', '-P', '-cf', tmp_out] + list(entries), cwd=work, check=True)
         if os.path.exists(out): os.remove(out)
         os.replace(tmp_out, out)
 
@@ -226,15 +230,15 @@ def main():
     ap.add_argument('--csv', required=True, help='CSV с листа «Ответы»')
     ap.add_argument('--template', required=True, help='выгрузка формы «Анкета родителей» из АРМ СОРУ (*.7z)')
     ap.add_argument('--out', required=True, help='куда сохранить файл для загрузки (*.7z)')
-    ap.add_argument('--pid', default='p_sd1', help='процесс СОРУ (по умолчанию p_sd1 — стартовая диагностика 1 класс)')
+    ap.add_argument('--pid', help='заменить процесс в заголовке (по умолчанию — как в шаблоне)')
     ap.add_argument('--period', help='период, например month_2025_9 (по умолчанию — из шаблона)')
     ap.add_argument('--match', action='append', default=[], help='«ФИО как в анкете=код ученика», можно несколько раз')
     a = ap.parse_args()
 
-    entry, ttext = load_template(a.template)
+    entries, entry, ttext = load_template(a.template)
     students, tperiod = students_of(ttext)
     period = a.period or tperiod
-    print(f'Шаблон: учеников {len(students)}, период {period}, процесс → {a.pid}')
+    print(f'Шаблон: файлов {len(entries)}, учеников {len(students)}, период {period}')
 
     with open(a.csv, encoding='utf-8-sig', newline='') as f:
         rows = list(csv.DictReader(f))
@@ -274,7 +278,9 @@ def main():
         print(f'\nБез анкеты: {len(missing)} уч.')
 
     if not data: sys.exit('\nНечего загружать.')
-    write_7z(entry, build(ttext, period, data, a.pid), a.out)
+    # архив повторяет выгрузку-шаблон: те же файлы в том же порядке, меняется только анкета родителей
+    entries[entry] = build(ttext, period, data, a.pid).encode('cp1251', errors='replace')
+    write_7z(entries, a.out)
     print(f'\nГотово: {a.out} — {sum(len(v) for v in data.values())} значений по {len(data)} ученикам.')
 
 
