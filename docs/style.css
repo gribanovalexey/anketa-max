@@ -96,3 +96,19 @@ textarea.field { min-height: 140px; resize: vertical; }
   animation: spin 0.8s linear infinite; margin-bottom: 12px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.note { background: var(--surface); border-radius: var(--radius); padding: 12px 14px; }
+.option.consent { margin-top: 12px; font-size: 14px; }
+
+.matrix-row { padding: 12px 0; border-bottom: 1px solid var(--border); scroll-margin: 16px; }
+.matrix-row:last-child { border-bottom: 0; }
+.matrix-row.missing .matrix-label { color: var(--error); }
+.matrix-label { margin-bottom: 8px; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill {
+  flex: 1 1 auto; min-height: 40px; padding: 8px 12px; border-radius: 10px;
+  border: 2px solid transparent; background: var(--surface); color: inherit;
+  font: inherit; font-size: 14px; cursor: pointer;
+}
+.pill.selected { background: var(--accent); color: var(--accent-text); }
+.matrix-row.missing .pill { border-color: var(--error); }
