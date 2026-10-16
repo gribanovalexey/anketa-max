@@ -24,7 +24,15 @@
     (children || []).forEach(function (c) { if (c) n.appendChild(c); });
     return n;
   }
-  function render(screen) { app.innerHTML = ''; app.appendChild(screen); }
+  function render(screen) {
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); // скрыть клавиатуру
+    app.innerHTML = '';
+    app.appendChild(screen);
+    // каждый новый экран открывается с самого верха (после длинного вопроса страница была прокручена вниз)
+    window.scrollTo(0, 0);
+    if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+    requestAnimationFrame(function () { window.scrollTo(0, 0); });
+  }
   function haptic(kind) {
     try {
       if (!WA || !WA.HapticFeedback) return;
