@@ -18,6 +18,7 @@ import csv
 import difflib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -222,7 +223,7 @@ def write_7z(entries, out):
         tmp_out = os.path.join(tmp, 'out.7z')
         subprocess.run([TAR, '--format=7zip', '-P', '-cf', tmp_out] + list(entries), cwd=work, check=True)
         if os.path.exists(out): os.remove(out)
-        os.replace(tmp_out, out)
+        shutil.move(tmp_out, out)  # out может быть на другом диске
 
 
 def main():
