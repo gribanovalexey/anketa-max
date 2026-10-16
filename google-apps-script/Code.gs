@@ -6,6 +6,7 @@
  *   BOT_TOKEN        — токен бота MAX (обязательно)
  *   SHEET_NAME       — имя листа с ответами (по умолчанию «Ответы»)
  *   REQUIRE_CONTACT  — "false", чтобы анкету можно было заполнить без номера телефона
+ *   DONE_MESSAGE     — текст сообщения бота после отправки анкеты ({child} — имя ребёнка)
  *   ALLOW_DEBUG      — "true", чтобы принимать ответы без подписи (только для теста в браузере!)
  *
  * Запуск бота (см. README) — один из двух режимов:
@@ -39,7 +40,9 @@ function doPost(e) {
       });
     }
     if (req.action === 'submit') {
-      return json_(saveAnswers_(auth.user, req.answers || [], !!req.allowResubmit));
+      var res = saveAnswers_(auth.user, req.answers || [], !!req.allowResubmit);
+      if (res.ok) notifyDone_(auth.user, req.answers || []);
+      return json_(res);
     }
     return json_({ ok: false, error: 'unknown_action' });
   } catch (err) {
@@ -83,6 +86,23 @@ function saveAnswers_(user, answers, allowResubmit) {
     return { ok: true };
   } finally {
     lock.releaseLock();
+  }
+}
+
+/**
+ * Сообщение в чат с ботом после отправки анкеты.
+ * Текст можно задать свойством DONE_MESSAGE; {child} заменяется на ответ «Фамилия и имя учащегося».
+ */
+function notifyDone_(user, answers) {
+  if (!user.id) return;
+  try {
+    var child = answers.filter(function (a) { return a.id === 'child'; })[0];
+    var childName = child && child.value ? String(child.value).trim() : '';
+    var tpl = PropertiesService.getScriptProperties().getProperty('DONE_MESSAGE') ||
+      (childName ? 'Спасибо! Анкета на ребёнка «{child}» получена.' : 'Спасибо! Ваша анкета получена.');
+    sendMessage_(user.id, tpl.replace(/\{child\}/g, childName));
+  } catch (err) {
+    console.error('Не удалось отправить сообщение после анкеты', err); // ответы уже сохранены
   }
 }
 
