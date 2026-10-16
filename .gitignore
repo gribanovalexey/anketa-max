@@ -1,1 +1,5 @@
 .claude/
+soru/*.csv
+soru/*.7z
+*.fdb
+*.FDB
