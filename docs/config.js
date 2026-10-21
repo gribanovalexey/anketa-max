@@ -7,7 +7,7 @@
 //   'start'  — стартовую (сентябрь)      'final' — итоговую (конец года)
 //   'choose' — первый экран с выбором из двух анкет
 // Для проверки любую анкету можно открыть по ссылке …/anketa-max/?s=start или ?s=final
-window.ACTIVE_SURVEY = 'start';
+window.ACTIVE_SURVEY = 'choose';
 
 var YES_NO = ['Да', 'Нет'];
 var YES4 = ['Да', 'Скорее да', 'Скорее нет', 'Нет'];
