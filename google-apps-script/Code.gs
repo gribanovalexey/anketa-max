@@ -35,12 +35,12 @@ function doPost(e) {
       var id = auth.user.id;
       return json_({
         ok: true,
-        done: id ? hasAnswered_(id) : false,
+        done: id ? hasAnswered_(id, req.sheet) : false,
         needContact: id ? contactRequired_() && !getContact_(id) : false
       });
     }
     if (req.action === 'submit') {
-      var res = saveAnswers_(auth.user, req.answers || [], !!req.allowResubmit);
+      var res = saveAnswers_(auth.user, req.answers || [], !!req.allowResubmit, req.sheet);
       if (res.ok) notifyDone_(auth.user, req.answers || []);
       return json_(res);
     }
@@ -57,16 +57,16 @@ function doGet() {
 
 // ---------------- запись ответов ----------------
 
-function saveAnswers_(user, answers, allowResubmit) {
+function saveAnswers_(user, answers, allowResubmit, sheetName) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    if (!allowResubmit && user.id && hasAnswered_(user.id)) return { ok: false, error: 'already' };
+    if (!allowResubmit && user.id && hasAnswered_(user.id, sheetName)) return { ok: false, error: 'already' };
 
     var contact = user.id ? getContact_(user.id) : null;
     if (user.id && !contact && contactRequired_()) return { ok: false, error: 'need_contact' };
 
-    var sheet = getSheet_();
+    var sheet = getSheet_(sheetName);
     var headers = ensureHeaders_(sheet, FIXED_HEADERS.concat(answers.map(function (a) { return a.title; })));
 
     var row = new Array(headers.length).fill('');
@@ -106,8 +106,13 @@ function notifyDone_(user, answers) {
   }
 }
 
-function getSheet_() {
+/**
+ * Лист для ответов. Анкета может попросить свой лист (например, «Ответы (итоговая)»),
+ * но только с названием, начинающимся на «Ответы», — чтобы нельзя было писать в «Контакты».
+ */
+function getSheet_(requested) {
   var name = PropertiesService.getScriptProperties().getProperty('SHEET_NAME') || 'Ответы';
+  if (requested && /^Ответы( \([^()]{1,40}\))?$/.test(String(requested))) name = String(requested);
   return getOrCreateSheet_(name);
 }
 
@@ -141,8 +146,8 @@ function findUserRow_(sheet, userId) {
   return found ? found.getRow() : 0;
 }
 
-function hasAnswered_(userId) {
-  return findUserRow_(getSheet_(), userId) > 0;
+function hasAnswered_(userId, sheetName) {
+  return findUserRow_(getSheet_(sheetName), userId) > 0;
 }
 
 /** Защита от формул в ячейках (=, +, -, @ в начале строки). */

@@ -1,7 +1,8 @@
 (function () {
   'use strict';
 
-  var S = window.SURVEY;
+  var SURVEYS = { start: window.SURVEY, final: window.SURVEY_FINAL };
+  var S = window.SURVEY;                     // текущая анкета (выбирается при старте)
   var WA = window.WebApp || null;            // MAX Bridge
   var initData = (WA && WA.initData) || '';  // подписанная строка для проверки на сервере
   var user = (WA && WA.initDataUnsafe && WA.initDataUnsafe.user) || {};
@@ -43,7 +44,7 @@
   function isRequired(q) { return q.required !== false; }
 
   function api(action, extra) {
-    var body = Object.assign({ action: action, initData: initData }, extra || {});
+    var body = Object.assign({ action: action, initData: initData, sheet: S.sheet }, extra || {});
     // text/plain — «простой» запрос без CORS preflight, Apps Script его принимает
     return fetch(S.endpoint, {
       method: 'POST',
@@ -375,11 +376,37 @@
     showMessage('📱', 'Откройте анкету в MAX', 'Анкета работает только внутри мессенджера MAX — через кнопку в чате с ботом.');
     return;
   }
-  api('check')
-    .then(function (res) {
-      if (res.ok && res.done && !S.allowResubmit) showMessage('👌', S.alreadyDone, '', true);
-      else if (res.ok && res.needContact) showNeedContact();
-      else showIntro(res.ok && res.done);
-    })
-    .catch(function () { showIntro(); });
+
+  function begin(key) {
+    S = SURVEYS[key] || window.SURVEY;
+    answers = {}; others = {}; current = 0; consentGiven = false;
+    render(el('div', { class: 'screen center' }, [el('div', { class: 'spinner' }), el('p', { class: 'muted', text: 'Загрузка…' })]));
+    api('check')
+      .then(function (res) {
+        if (res.ok && res.done && !S.allowResubmit) showMessage('👌', S.alreadyDone, '', true);
+        else if (res.ok && res.needContact) showNeedContact();
+        else showIntro(res.ok && res.done);
+      })
+      .catch(function () { showIntro(); });
+  }
+
+  function showChooser() {
+    setBack(false);
+    var keys = Object.keys(SURVEYS).filter(function (k) { return SURVEYS[k]; });
+    render(el('div', { class: 'screen' }, [
+      el('div', { class: 'body' }, [
+        el('h1', { text: window.SURVEY.title }),
+        el('p', { class: 'muted', text: 'Выберите анкету:' })
+      ].concat(keys.map(function (k) {
+        return el('button', { type: 'button', class: 'option', onclick: function () { begin(k); } },
+          [el('span', { text: SURVEYS[k].menuTitle || SURVEYS[k].subtitle })]);
+      })))
+    ]));
+  }
+
+  // Какая анкета: ?s=… в адресе → start_param из MAX → ACTIVE_SURVEY в config.js
+  var m = location.search.match(/[?&]s=(\w+)/);
+  var startParam = WA && WA.initDataUnsafe && WA.initDataUnsafe.start_param;
+  var choice = (m && m[1]) || (SURVEYS[startParam] ? startParam : '') || window.ACTIVE_SURVEY || 'start';
+  if (choice === 'choose') showChooser(); else begin(choice);
 })();
